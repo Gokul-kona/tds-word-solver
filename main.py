@@ -1,75 +1,86 @@
 import os
-import json
-from dotenv import load_dotenv
-from fastapi import FastAPI
-from pydantic import BaseModel
+from fastapi import FastAPI, HTTPException, status
+from pydantic import BaseModel, Field, field_validator
 from google import genai
-
-load_dotenv()
+from google.genai import types
 
 app = FastAPI()
 
-client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
+# Initialize Gemini Client (automatically reads GEMINI_API_KEY environment variable)
+client = genai.Client()
 
+# --- Request/Response Schemas (Strict Grader Specifications) ---
 
-class Problem(BaseModel):
+class ProblemRequest(BaseModel):
     problem_id: str
     problem: str
 
+class SolverResponse(BaseModel):
+    reasoning: str = Field(..., description="Step-by-step mathematical reasoning.")
+    answer: int = Field(..., description="The final single integer answer.")
 
-PROMPT = """
-You are an expert arithmetic word-problem solver.
+    @field_validator("reasoning")
+    @classmethod
+    def validate_reasoning_length(cls, v: str) -> str:
+        # Grader Rule: reasoning must be >= 80 characters
+        if len(v) < 80:
+            raise ValueError("Reasoning must be at least 80 characters long.")
+        return v
 
-Solve the user's problem carefully.
-
-Return ONLY valid JSON with EXACTLY these two keys:
-
-{
-  "reasoning": "A concise explanation of the calculation in at least 80 characters. Do not reveal hidden reasoning or internal deliberation. Simply explain the arithmetic performed.",
-  "answer": 123
-}
-
-Rules:
-- answer must be a JSON integer.
-- Do NOT return a string or float.
-- Ignore irrelevant numbers.
-- No markdown.
-- No extra keys.
-"""
-
-
-@app.get("/")
-def home():
-    return {"status": "ok"}
+    @field_validator("answer")
+    @classmethod
+    def validate_integer(cls, v: any) -> int:
+        # Grader Rule: Strict JSON integer (no floats, no booleans, no strings)
+        if not isinstance(v, int) or isinstance(v, bool):
+            raise ValueError("Answer must be a strict JSON integer.")
+        return v
 
 
-@app.post("/solve")
-def solve(req: Problem):
-    response = client.models.generate_content(
-        model="gemini-2.5-flash-lite",
-        contents=f"{PROMPT}\n\nProblem:\n{req.problem}",
-    )
+# --- API Endpoint ---
 
-    text = response.text.strip()
+@app.post("/solve", response_model=SolverResponse)
+async def solve_word_problem(request: ProblemRequest):
+    try:
+        # Instruction ensuring distractors are ignored and character limits met
+        system_instruction = (
+            "You are a precise mathematical solver. Your job is to solve the given word problem.\n"
+            "Rules:\n"
+            "1. Identify and completely ignore irrelevant numbers or background distractor data.\n"
+            "2. Break down the calculation step-by-step.\n"
+            "3. Ensure the written reasoning explanation is thorough, explicit, and exceeds 80 characters.\n"
+            "4. Compute the final answer as a single, strict integer."
+        )
 
-    # Remove markdown if Gemini adds it
-    if text.startswith("```"):
-        text = text.split("\n", 1)[1]
-        text = text.rsplit("```", 1)[0].strip()
+        # Generate structured content using Gemini
+        response = client.models.generate_content(
+            model='gemini-3.5-flash', # Blazing fast, ideal for programmatic workflows
+            contents=f"Problem: {request.problem}",
+            config=types.GenerateContentConfig(
+                system_instruction=system_instruction,
+                temperature=0.0, # Forces deterministic calculation behavior
+                response_mime_type="application/json",
+                response_schema=SolverResponse, # Direct native Pydantic enforcement
+            ),
+        )
 
-    data = json.loads(text)
+        # The SDK automatically handles parsing into the schema when response_schema is used
+        validated_response = response.parsed
 
-    # Validate output
-    if set(data.keys()) != {"reasoning", "answer"}:
-        raise ValueError("Model returned incorrect keys")
+        if not validated_response:
+            raise HTTPException(
+                status_code=status.HTTP_502_BAD_GATEWAY, 
+                detail="The model failed to return a conforming response."
+            )
 
-    if not isinstance(data["reasoning"], str):
-        raise ValueError("Reasoning must be a string")
+        return validated_response
 
-    if len(data["reasoning"]) < 80:
-        raise ValueError("Reasoning is too short")
-
-    if not isinstance(data["answer"], int):
-        raise ValueError("Answer must be an integer")
-
-    return data
+    except ValueError as val_err:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Validation failed: {str(val_err)}"
+        )
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, 
+            detail=str(e)
+        )
