@@ -46,7 +46,7 @@ def generate_content_with_retry(contents, config, max_retries: int = 4, initial_
     for i in range(max_retries):
         try:
             resp = client.models.generate_content(
-                model='gemini-1.5-flash-8b',  # High-throughput model tier with larger quotas
+                model='gemini-1.5-flash',  # High-throughput model tier with larger quotas
                 contents=contents,
                 config=config,
             )
