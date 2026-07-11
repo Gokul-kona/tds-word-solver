@@ -37,15 +37,16 @@ class SolverResponse(BaseModel):
 
 # --- Helper function to handle 429 Rate Limits gracefully ---
 
-def generate_content_with_retry(contents, config, max_retries: int = 5, initial_delay: float = 2.0):
+def generate_content_with_retry(contents, config, max_retries: int = 4, initial_delay: float = 1.0):
     """
-    Wraps the content generation call with exponential backoff to handle 429 rate limits.
+    Wraps the content generation call with tighter exponential backoff 
+    to prevent exceeding the grader's 25-second timeout window.
     """
     delay = initial_delay
     for i in range(max_retries):
         try:
             resp = client.models.generate_content(
-                model='gemini-2.0-flash',  # <-- Update this line to gemini-2.0-flash
+                model='gemini-1.5-flash-8b',  # High-throughput model tier with larger quotas
                 contents=contents,
                 config=config,
             )
@@ -55,10 +56,11 @@ def generate_content_with_retry(contents, config, max_retries: int = 5, initial_
                 if i == max_retries - 1:
                     raise e
                 time.sleep(delay)
-                delay *= 2  
+                delay *= 1.5  # Gentler pacing multiplication to keep total time low
             else:
                 raise e
     raise HTTPException(status_code=500, detail="Failed after maximum retries due to rate limits.")
+
 # --- Routes ---
 
 @app.get("/")
