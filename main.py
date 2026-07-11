@@ -46,7 +46,7 @@ def home():
 @app.post("/solve")
 def solve(req: Problem):
     response = client.models.generate_content(
-        model="gemini-2.5-flash",
+        model="gemini-2.5-flash-lite",
         contents=f"{PROMPT}\n\nProblem:\n{req.problem}",
     )
 
